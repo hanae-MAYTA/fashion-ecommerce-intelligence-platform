@@ -1,0 +1,35 @@
+# ── Données (volumineuses / potentiellement sensibles) ──
+data/raw/
+data/cleaned/
+data/processed/
+
+# ── Power BI ──
+# Les .pbix peuvent devenir très lourds (cache du modèle de données inclus).
+# Décommente la ligne suivante si tu ne veux pas versionner le fichier binaire :
+# power bi/*.pbix
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# ── Jupyter ──
+.jupyter/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Éditeurs ──
+.vscode/
+.idea/
+
+# ── Logs / temporaires ──
+*.log
+*.tmp
