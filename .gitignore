@@ -1,25 +1,21 @@
-# ── Données (volumineuses / potentiellement sensibles) ──
-data/raw/
-data/cleaned/
-data/processed/
+# ── Données : jamais versionnées (volumineuses + données clients) ──
+data/**
+!data/README.md
 
-# ── Power BI ──
-# Les .pbix peuvent devenir très lourds (cache du modèle de données inclus).
-# Décommente la ligne suivante si tu ne veux pas versionner le fichier binaire :
-# power bi/*.pbix
+# ── Secrets / configuration locale ──
+.env
+
+# ── Power BI : fichier binaire lourd (cache du modèle inclus) ──
+*.pbix
 
 # ── Python ──
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 .ipynb_checkpoints/
 .venv/
 venv/
 env/
 *.egg-info/
-
-# ── Jupyter ──
-.jupyter/
 
 # ── OS ──
 .DS_Store

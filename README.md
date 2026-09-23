@@ -1,250 +1,219 @@
 # Fashion E-commerce Intelligence Platform
 
-Pipeline data analytics de bout en bout sur un dataset e-commerce mode multi-devises : nettoyage et modélisation en étoile sous SQL Server, segmentation client (RFM), prédiction de churn, prévision de chiffre d'affaires, et dashboard Power BI.
+Pipeline data de bout en bout sur **6,4 millions de lignes de ventes** d'une enseigne de mode présente dans 7 pays : audit et nettoyage des données, entrepôt SQL Server en étoile, analyse exploratoire, segmentation client RFM, prédiction du churn, prévision du chiffre d'affaires et dashboard Power BI.
 
-> Premier projet data analyst — construit du CSV brut jusqu'au dashboard, avec une attention particulière portée à la qualité des données et à la transparence sur les limites de chaque modèle.
-
----
-
-## Aperçu du projet
-
-| | |
-|---|---|
-| **Domaine** | E-commerce mode, ventes multi-devises, multi-pays |
-| **Volume** | 6,4M lignes de transactions · 1,64M clients · 17,9K produits · 35 magasins |
-| **Période couverte** | ~27 mois d'historique |
-| **Stack** | Python (pandas, scikit-learn, statsmodels) · SQL Server · Power BI |
-| **Livrables** | Data warehouse en étoile, 3 modèles ML/statistiques, dashboard Power BI 4 pages |
+**Stack :** Python (pandas, scikit-learn, statsmodels, SciPy) · SQL Server (T-SQL) · Power BI
 
 ---
 
-## Architecture du pipeline
+## Problème métier
 
-```
-CSV bruts (raw)
-      │
-      ▼
-Data Understanding → Data Quality → Data Cleaning   (Python / pandas)
-      │
-      ▼
-Data Transformation — modélisation en étoile (star schema)
-      │
-      ▼
-SQL Server (BULK INSERT + staging)
-      │
-      ▼
-EDA · RFM Segmentation · Churn Prediction · Revenue Forecasting   (Python)
-      │  (résultats réinjectés dans SQL Server)
-      ▼
-Power BI  —  Dashboard 4 pages
-```
+Une enseigne de mode multi-pays veut piloter son activité à partir de ses données de caisse :
 
-### Modèle de données (star schema)
+1. **Suivre la performance** : CA, croissance, saisonnalité, pays et catégories qui portent le chiffre d'affaires.
+2. **Connaître ses clients** : lesquels génèrent le CA, lesquels sont en train de décrocher (segmentation RFM).
+3. **Anticiper** : quels clients risquent de ne plus acheter (churn) et quel CA attendre sur les prochains mois (prévision).
 
-```
-                 Dim_Customer
-                      │
-Dim_Date ──────── Fact_Sales ──────── Dim_Product
-                      │
-                 Dim_Store ── Dim_Employee
+## Données
 
-Dim_Discount : table de référence autonome (périodes promo par catégorie),
-               jointe à la demande — pas de FK directe sur Fact_Sales
-               (le taux de remise est déjà présent sur chaque ligne de vente).
-```
+Dataset public Kaggle **Global Fashion Retail Sales** — données **synthétiques** (voir [`data/README.md`](data/README.md) pour le téléchargement).
 
----
-
-## Structure du repo
-
-```
-├── data/
-│   ├── raw/            # CSV sources (customers, products, transactions, ...)
-│   ├── cleaned/         # après 01-03 : nettoyage, valeurs manquantes traitées
-│   └── processed/       # après 04 : tables du star schema, prêtes pour SQL Server
-│
-├── notebooks/
-│   ├── 01_data_understanding.ipynb
-│   ├── 02_data_quality.ipynb
-│   ├── 03_data_cleaning.ipynb
-│   ├── 04_data_transformation.ipynb
-│   ├── 05_eda.ipynb
-│   ├── 06_rfm_segmentation.ipynb
-│   ├── 07_churn_prediction.ipynb
-│   └── 08_forecasting.ipynb
-│
-├── python/
-│   ├── load_to_sql_server.py        # chargement dimensions + Fact_Sales (BULK INSERT)
-│   ├── load_fact_only.py            # rechargement Fact_Sales via table staging
-│   └── diagnose_fact_duplicates.py  # diagnostic doublons (Invoice_ID, Line)
-│
-├── sql/
-│   ├── 01_create_database.sql
-│   ├── 02_create_tables.sql
-│   ├── 03_business_analytics.sql
-│   ├── 04_rfm.sql
-│   └── 05_churn_features.sql
-│
-├── power bi/
-│   └── dashboard.pbix
-│
-├── documentation/
-│   └── screenshots/      # captures des 4 pages du dashboard (à ajouter)
-│
-├── requirements.txt
-└── .gitignore
-```
-
----
-
-## Pipeline détaillé
-
-### 1–3. Data Understanding, Quality & Cleaning
-
-Exploration et audit qualité sur les 6 fichiers sources bruts avant toute transformation.
-
-**Volumes bruts :**
-
-| Table | Lignes | Colonnes |
+| Table | Lignes | Contenu |
 |---|---|---|
-| Transactions | 6 416 827 | 19 |
-| Customers | 1 643 306 | 9 |
-| Products | 17 940 | 12 |
-| Discounts | 181 | 6 |
-| Employees | 404 | 4 |
-| Stores | 35 | 8 |
+| transactions | 6 416 827 | lignes de facture (ventes et retours), 4 devises |
+| customers | 1 643 306 | profil client (données personnelles fictives) |
+| products | 17 940 | catégorie, sous-catégorie, coût de production |
+| discounts | 181 | calendrier des promotions |
+| employees | 404 | vendeurs par magasin |
+| stores | 35 | magasins (États-Unis, Chine, Allemagne, Royaume-Uni, France, Espagne, Portugal) |
 
-**Problèmes identifiés et traités :**
-
-- **798 lignes dupliquées exactes** dans `transactions` → supprimées (`drop_duplicates`)
-- **Cohérence financière** : vérification `Line_Total = Unit_Price × Quantity × (1 − Discount)` sur les ventes et les retours (formule inversée pour les retours, montants négatifs)
-- **`Return_Ratio`** : nouvelle colonne calculée pour les lignes de type `Return`, ratio entre le montant remboursé et le montant théorique de la ligne
-- **Valeurs manquantes** traitées au cas par cas plutôt qu'une suppression systématique :
-  - `Color` (transactions) : 67,8 % manquant, non récupérable depuis `Products` → conservé tel quel, imputé `Unknown` en aval si besoin
-  - `Job_Title` (customers) : 35,55 % manquant, aucune catégorie dominante ne permet une imputation fiable → `Unknown`
-  - `Color`/`Sizes` (products) → `Unknown` / `N/A`
-  - `Category`/`Sub_Category` (discounts) → `All`
-- **Intégrité référentielle** : aucune transaction orpheline détectée (Customer/Product/Store/Employee ID tous valides)
-
-### 4. Data Transformation — Star Schema
-
-Conversion des tables nettoyées en modèle dimensionnel : `Dim_Date`, `Dim_Customer`, `Dim_Product`, `Dim_Store`, `Dim_Employee`, `Dim_Discount` (autonome) et `Fact_Sales` (grain : une ligne par ligne de facture, clé `Invoice_ID` + `Line`).
-
-Contrôles de clés étrangères systématiques avant export — toute FK orpheline aurait cassé le chargement SQL Server ou introduit des `NULL` silencieux.
-
-### Chargement SQL Server
-
-- Dimensions chargées via `pandas.to_sql` (SQLAlchemy)
-- `Fact_Sales` (6,4M lignes) chargée via `BULK INSERT` SQL Server (bien plus rapide qu'un insert ligne par ligne sur ce volume), avec passage par une table `staging` pour permettre un rechargement propre en cas d'échec partiel
-- Vue `vw_Fact_Sales_USD` créée côté SQL pour convertir les montants multi-devises en USD (colonnes `_USD` dédiées) — c'est cette vue, et non `Fact_Sales` brute, qui alimente l'EDA, les modèles et Power BI
-
-### 5. EDA (Exploratory Data Analysis)
-
-Analyses agrégées directement en SQL (évite de charger 6,4M lignes en mémoire) : évolution mensuelle du CA, saisonnalité, top catégories/sous-catégories, distributions et outliers (méthode IQR) sur un échantillon de 200K lignes, corrélations, et test statistique sur l'effet des promotions sur le volume de ventes.
-
-### 6. Segmentation RFM (Phase 10)
-
-- Scoring **Récence / Fréquence / Montant** en quintiles (1 à 5) sur **1 283 707 clients**
-- 6 segments business dérivés des scores R et F : **VIP, Loyal, New Customers, Potential Loyalist, At Risk, Lost**
-- Export vers `warehouse.Customer_Segments` pour Power BI
-
-**Insight clé du dashboard** : le segment **Lost** est le plus nombreux en volume de clients, mais c'est le segment **VIP** qui génère largement le plus de chiffre d'affaires — le volume de clients ne reflète pas la contribution réelle au CA.
-
-### 7. Prédiction de Churn (Phase 11)
-
-- Trois modèles comparés : **Régression Logistique, Random Forest, Gradient Boosting**, sur des features comportementales (récence, ancienneté, fréquence, montant, taux d'usage des remises, momentum des commandes récentes, etc.)
-- **1 211 337 clients** scorés, meilleur modèle retenu : **Gradient Boosting**
-
-| Modèle | Accuracy | Precision | Recall | F1 | ROC-AUC |
-|---|---|---|---|---|---|
-| Logistic Regression | 0,660 | 0,668 | 0,918 | 0,773 | 0,640 |
-| Random Forest | 0,659 | 0,669 | 0,909 | 0,771 | 0,640 |
-| **Gradient Boosting** | 0,660 | 0,669 | 0,911 | 0,772 | **0,640** |
-
-Export des probabilités individuelles vers `warehouse.Customer_Churn_Predictions`.
-
-### 8. Prévision de Chiffre d'Affaires (Phase 12)
-
-- Modèle **Holt-Winters (Exponential Smoothing)**, tendance et saisonnalité additives, sur le CA mensuel agrégé
-- Validation sur les 2 derniers mois disponibles (contrainte du dataset : seulement 27 mois d'historique = 2 cycles saisonniers complets, tout juste le minimum requis par le modèle)
-- **MAPE de validation : 37,1 %**
-- Prévision finale sur les 3 mois suivants, exportée vers `warehouse.Revenue_Forecast` avec le MAPE stocké à côté de chaque prévision — affiché tel quel dans le dashboard plutôt que caché
-
-### Dashboard Power BI
-
-Modèle en étoile (10 tables), relations `*:1` en sens unique des dimensions vers `vw_Fact_Sales_USD`, relations `1:1` en double sens entre `Dim_Customer` et les tables analytiques (`Customer_Segments`, `Customer_Churn_Predictions`). Mesures DAX organisées dans une table dédiée `_Mesures`.
-
-**4 pages :**
-
-1. **Vue d'ensemble** — CA, évolution vs année précédente, tendance mensuelle (slicer d'année)
-2. **Clients & Segmentation** — répartition RFM, CA par segment
-3. **Churn** — taux de churn, clients à plus haut risque, taux de churn par segment RFM
-4. **Prévisions** — CA prévisionnel à 3 mois avec MAPE affiché en toute transparence
+Période : **1er janvier 2023 → 18 mars 2025** (mars 2025 incomplet).
 
 ---
 
-## Aperçu du dashboard
+## Architecture
 
-<!--
-  Ajoute ici une capture nette de chaque page (sans les panneaux latéraux
-  Power BI, juste le canevas de la page) — clique sur la page dans Power BI,
-  puis Fichier → Exporter → Image, ou fais une capture d'écran classique
-  en plein écran (F11 pour masquer les rubans avant de capturer).
+```
+data/raw/*.csv
+    │  src/etl.py            nettoyage + modèle en étoile (règles justifiées dans le notebook 01)
+    ▼
+data/processed/*.csv
+    │  src/load_to_sql_server.py   dimensions (pandas) + faits (BULK INSERT via staging)
+    ▼
+SQL Server — schéma warehouse
+    │  vw_Fact_Sales_USD     conversion de toutes les ventes en USD (source unique des analyses)
+    ▼
+Notebooks 03-06 (EDA, RFM, churn, prévision) ──► résultats réinjectés dans SQL Server
+    ▼
+Power BI (4 pages)
+```
 
-  Dépose les images dans un dossier ex: documentation/screenshots/,
-  puis remplace les liens ci-dessous par les vrais chemins.
--->
-
-### Vue d'ensemble
-![Vue d'ensemble](documentation/screenshots/01_vue_ensemble.png)
-
-### Clients & Segmentation RFM
-![Clients & Segmentation](documentation/screenshots/02_clients_segmentation.png)
-
-### Analyse du Churn
-![Churn](documentation/screenshots/03_churn.png)
-
-### Prévisions
-![Prévisions](documentation/screenshots/04_previsions.png)
+**Modèle en étoile :** `Fact_Sales` (grain : une ligne de facture, ventes et retours) reliée à `Dim_Date`, `Dim_Customer`, `Dim_Product`, `Dim_Store` (-> `Dim_Employee`) et `Dim_Currency` ; `Dim_Discount` est une table de référence autonome.
 
 ---
 
-## Limites connues (transparence)
+## Étapes et résultats
 
-Ce projet documente volontairement ses propres limites plutôt que de les masquer :
+### 1. Audit et nettoyage des données — [`01`](notebooks/01_data_audit.ipynb), [`02`](notebooks/02_data_cleaning_star_schema.ipynb)
 
-- **Prévision (MAPE 37,1 %)** : précision limitée par la faible profondeur d'historique (27 mois = 2 cycles saisonniers). À lire comme un ordre de grandeur directionnel, pas un chiffre engageant. Un dataset de 3-4 ans serait nécessaire pour une prévision fiable en production.
-- **Churn (ROC-AUC 0,64)** : performance modeste, proche d'un modèle faiblement discriminant — nettement au-dessus d'un tirage aléatoire (0,50) mais loin d'un modèle très performant. Les features comportementales disponibles ne suffisent probablement pas à elles seules à bien prédire le churn ; des données supplémentaires (interactions support, navigation web, etc.) amélioreraient le modèle.
-- **Segmentation RFM** : la répartition obtenue (segments "Lost" et "VIP" tous deux surreprésentés, ~31 % de VIP) mériterait une revue des seuils de quintiles — une segmentation RFM "manuel" en production ajusterait probablement ces bornes avec un métier.
-- **Données synthétiques** : le dataset contient des noms/emails manifestement générés (`fake_gmail.com`, etc.) — projet à but d'apprentissage, pas de données réelles de production.
+| Problème détecté | Décision |
+|---|---|
+| 798 lignes dupliquées (retours enregistrés 2 à 3 fois) | suppression |
+| Remise à 0 sur 98 295 retours alors que le remboursement correspond au prix remisé payé | **remise reconstituée** à partir du montant remboursé : `Line Total = ±Prix x Qté x (1 − Remise)` devient vrai sur 100 % des lignes |
+| ~41 000 retours distincts partageant un même numéro de facture | conservés ; clé technique `Sale_Key` en base plutôt que `(Invoice_ID, Line)` |
+| `Color` manquant à 68 %, `Job Title` à 36 %, `Sizes` à 12 % | `Unknown` / `N/A` (non récupérables, jamais utilisés dans un calcul de montant) |
+| Promotions globales sans catégorie | `All` |
+| Pays et villes en langue locale (`中国`, `España`…) | traduction en anglais |
+| Ventes en USD, EUR, GBP et CNY | conversion en USD dans une vue SQL (ne jamais additionner des devises différentes) |
+
+Contrôles automatisés avant chargement : aucune clé étrangère orpheline, clés primaires uniques, cohérence financière vérifiée ligne à ligne.
+
+### 2. Analyse exploratoire — [`03`](notebooks/03_eda.ipynb)
+
+**298,7 M$ de CA brut**, 4,3 millions de commandes, panier moyen de 69 $, 5,6 % du CA retourné.
+
+- **Croissance de +12,9 %** du CA en 2024 par rapport à 2023.
+- **Saisonnalité très forte et stable** : pics en mars, septembre-octobre et surtout décembre (3 fois un mois moyen).
+- **États-Unis et Chine réalisent chacun 27 % du CA** ; les costumes (homme et femme) sont les premières sous-catégories ; l'enfant ne pèse que 9 %.
+- **Marge brute d'environ 61 %**, homogène entre catégories.
+- **Les remises n'augmentent pas les quantités achetées** (Mann-Whitney, p = 0,65, taille d'effet nulle) — résultat observationnel, non causal.
+
+### 3. Segmentation RFM — [`04`](notebooks/04_rfm_segmentation.ipynb)
+
+1,28 million de clients acheteurs répartis en 6 segments (VIP, Loyal, New Customers, Potential Loyalist, At Risk, Lost), avec une recommandation d'action par segment.
+
+| Segment | % des clients | % du CA |
+|---|---|---|
+| VIP | 22,6 % | **43,3 %** |
+| Loyal | 18,6 % | 23,4 % |
+| At Risk | 11,0 % | 13,0 % |
+| Lost | **28,8 %** | 11,7 % |
+| New Customers | 10,8 % | 4,5 % |
+| Potential Loyalist | 8,2 % | 4,1 % |
+
+Résultat clé : **41 % des clients (VIP + Loyal) font 67 % du CA**. La priorité de réactivation est le segment **At Risk** : 141 000 anciens clients réguliers, 13 % du CA, sans achat depuis ~11 mois.
+
+### 4. Prédiction du churn — [`05`](notebooks/05_churn_prediction.ipynb)
+
+- **Churn** = aucun achat dans les 90 jours suivant la date d'observation (63 % des clients).
+- **Protocole sans fuite de données** : features calculées uniquement sur l'historique passé (fonction SQL paramétrée), **validation temporelle** (entraînement sur le snapshot de septembre 2024, test sur celui de décembre 2024).
+
+| Modèle (période de test) | ROC-AUC | PR-AUC | Lift top 10 % |
+|---|---|---|---|
+| Aléatoire | 0,500 | 0,631 | 1,00 |
+| Baseline : tri par récence | 0,576 | 0,689 | 1,17 |
+| **Régression logistique** (retenue) | **0,640** | **0,723** | **1,19** |
+| Gradient Boosting | 0,640 | 0,723 | 1,19 |
+
+- Le modèle bat la baseline métier, mais la performance reste **modeste** et est présentée telle quelle : données synthétiques, uniquement des variables transactionnelles. La **fréquence d'achat** porte l'essentiel du signal.
+- À performance égale, le modèle **le plus simple** est retenu.
+- Sortie : probabilité de churn et décile de risque pour chacun des 1,28 million de clients, à la dernière date disponible.
+
+### 5. Prévision du CA — [`06`](notebooks/06_revenue_forecasting.ipynb)
+
+Validation sur janvier-février 2025 :
+
+| Modèle | MAPE |
+|---|---|
+| **Naïf saisonnier** (même mois l'année précédente) | **2,0 %** |
+| Naïf saisonnier + croissance | 14,6 % |
+| Holt-Winters | 38,9 % |
+
+- Enseignement : le modèle statistique fait **nettement moins bien** qu'une simple baseline, car la saisonnalité est très stable et l'historique ne couvre que 2 cycles. **Toujours se comparer à une baseline naïve.**
+- Prévision retenue : **15,2 M$ en mars, 11,5 M$ en avril, 11,2 M$ en mai 2025**.
+
+### 6. Dashboard Power BI
+
+4 pages alimentées par SQL Server : vue d'ensemble, clients et segmentation RFM, churn, prévisions (avec l'erreur de validation affichée à côté de la prévision).
+
+> Les captures correspondent à la première version du dashboard (prévision Holt-Winters, churn historique). Les résultats de référence sont ceux des notebooks ci-dessus.
+
+| Vue d'ensemble | Segmentation RFM |
+|---|---|
+| ![Vue d'ensemble](docs/screenshots/01_vue_ensemble.png) | ![Segmentation](docs/screenshots/02_clients_segmentation.png) |
+| **Churn** | **Prévisions** |
+| ![Churn](docs/screenshots/03_churn.png) | ![Prévisions](docs/screenshots/04_previsions.png) |
+
+---
+
+## Limites et hypothèses
+
+- **Données synthétiques** : les résultats valident une méthode plus qu'ils ne décrivent un marché réel (les comportements y sont très réguliers et en partie aléatoires).
+- **Taux de change fixes** : la source ne fournit pas de taux ; la conversion USD utilise des taux moyens de marché 2023-2024 (EUR 1,08 · GBP 1,27 · CNY 0,1391), stockés dans `warehouse.Dim_Currency` et modifiables en un seul endroit. Les écarts de prix d'un même produit entre pays ne peuvent pas servir de taux : ils reflètent des grilles tarifaires locales.
+- **Coût de production supposé en USD** pour le calcul des marges.
+- **Historique court** (26 mois complets) : la prévision est un ordre de grandeur, validée sur 2 mois seulement.
+- **Churn à 90 jours** : dans la mode, beaucoup de clients n'achètent pas chaque trimestre ; une fenêtre de 180 jours serait plus proche d'un « vrai » churn.
+- **RFM et churn ne doivent pas être croisés naïvement** : la récence actuelle contient déjà l'information du label de churn historique (raisonnement circulaire).
+
+---
+
+## Structure du repository
+
+```
+├── data/                      # non versionné — voir data/README.md
+│   ├── raw/                   # CSV sources
+│   └── processed/             # tables du modèle en étoile (sortie de src/etl.py)
+├── notebooks/
+│   ├── 01_data_audit.ipynb
+│   ├── 02_data_cleaning_star_schema.ipynb
+│   ├── 03_eda.ipynb
+│   ├── 04_rfm_segmentation.ipynb
+│   ├── 05_churn_prediction.ipynb
+│   └── 06_revenue_forecasting.ipynb
+├── sql/
+│   ├── 01_create_database.sql       # base + schémas staging / warehouse
+│   ├── 02_create_tables.sql         # modèle en étoile, contraintes, index, taux de change
+│   ├── 03_create_views.sql          # vw_Fact_Sales_USD
+│   ├── 04_business_analytics.sql    # requêtes métier (KPI, marges, retours, magasins)
+│   ├── 05_rfm.sql                   # table Customer_RFM
+│   └── 06_churn_features.sql        # fonction fn_Churn_Features(@Snapshot_Date, @Window_Days)
+├── src/
+│   ├── config.py                    # chemins et paramètres (.env)
+│   ├── db.py                        # connexion SQL Server
+│   ├── etl.py                       # nettoyage + modèle en étoile + contrôles
+│   ├── load_to_sql_server.py        # chargement idempotent
+│   └── plotting.py                  # style graphique commun
+├── docs/screenshots/                # captures du dashboard
+├── .env.example
+└── requirements.txt
+```
 
 ---
 
 ## Reproduire le projet
 
-**Prérequis :** Python 3.x, SQL Server (local ou accessible) avec le pilote **ODBC Driver 17 for SQL Server** installé, Power BI Desktop.
+**Prérequis :** Python 3.10+, SQL Server 2017+ (local, distant ou Docker — voir plus bas) avec le pilote ODBC 17 ou 18, Power BI Desktop.
 
 ```bash
+# 1. Environnement
+python -m venv .venv
+.venv\Scripts\activate            # Windows  (macOS/Linux : source .venv/bin/activate)
 pip install -r requirements.txt
+cp .env.example .env              # puis renseigner le serveur SQL
+
+# 2. Données : placer les 6 CSV dans data/raw/ (voir data/README.md)
+
+# 3. Nettoyage + modèle en étoile
+python -m src.etl
+
+# 4. Base de données : exécuter sql/01 -> sql/03 (SSMS ou sqlcmd), puis charger
+python -m src.load_to_sql_server
+
+# 5. Tables analytiques : exécuter sql/05_rfm.sql et sql/06_churn_features.sql
+
+# 6. Analyses : exécuter les notebooks 03 -> 06 (ils réinjectent leurs résultats dans SQL Server)
 ```
 
-1. Placer les CSV sources dans `data/raw/`
-2. Exécuter les notebooks `01` → `04` dans l'ordre (génère `data/cleaned/` puis `data/processed/`)
-3. Créer la base et les tables : exécuter les scripts dans `sql/` (`01_create_database.sql` → `05_churn_features.sql`)
-4. Charger les données : `python python/load_to_sql_server.py`
-5. Exécuter les notebooks `05` → `08` (EDA, RFM, Churn, Forecasting) — chacun réinjecte ses résultats dans SQL Server
-6. Ouvrir `power bi/dashboard.pbix`, actualiser les données (Get Data → SQL Server)
+Les notebooks 01 et 02 documentent l'audit et le nettoyage ; ils ne sont pas nécessaires pour reproduire les tables (`python -m src.etl` fait le même travail).
 
----
+> Le `BULK INSERT` lit le fichier CSV depuis le serveur : le compte de service SQL Server doit avoir accès au dossier `data/processed/`.
 
-## Stack technique
+**Sans SQL Server installé : Docker.** SQL Server 2022 peut tourner dans un conteneur, avec les dossiers `data/processed` et `sql` montés en lecture seule :
 
-- **Python** — pandas, numpy, scikit-learn, statsmodels, scipy, matplotlib, seaborn, sqlalchemy, pyodbc
-- **SQL Server** — schémas `staging` et `warehouse`, chargement par `BULK INSERT`
-- **Power BI Desktop** — modèle en étoile, DAX, time intelligence
+```bash
+docker run -d --name fashion_mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="<mot de passe fort>" \
+  -p 1433:1433 -v "$(pwd)/data/processed:/data/processed:ro" -v "$(pwd)/sql:/sql:ro" \
+  mcr.microsoft.com/mssql/server:2022-latest
+```
 
----
-
-## Auteur
-
-Projet réalisé dans le cadre d'un apprentissage data analyst — premier projet de bout en bout.
+Dans `.env` : `DB_SERVER=localhost,1433`, `DB_USER=sa`, `DB_PASSWORD=<mot de passe>`, `DB_DRIVER=ODBC Driver 18 for SQL Server` et `DB_BULK_DATA_DIR=/data/processed` (chemin du CSV vu par le conteneur). Les scripts SQL s'exécutent alors avec `docker exec fashion_mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "<mot de passe>" -C -i /sql/01_create_database.sql`, et ainsi de suite.
